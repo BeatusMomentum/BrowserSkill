@@ -405,6 +405,7 @@ export async function captureBrowserDownload(
     }
     click = triggered;
     const item = await completion;
+    // Another extension can override our suggestion, so validate the completed path.
     if (!isInBrowserRelativeDir(item.filename, options.browserRelativeDir)) {
       // The final location may be user-selected, so leave the file in place.
       preserveOutsideDownload = true;

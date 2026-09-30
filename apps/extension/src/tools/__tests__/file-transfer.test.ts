@@ -1166,37 +1166,34 @@ describe("file transfer tools", () => {
   it.each([
     "C:\\Users\\tester\\Downloads\\report-60.csv",
     "C:\\Users\\tester\\Documents\\report-60.csv",
-  ])(
-    "rejects a download outside its transfer directory without deleting %s",
-    async (filename) => {
-      const fakes = popupDownloadFakes();
-      const download = fakes.item(60, "https://example.test/export?id=60");
+  ])("rejects a download outside its transfer directory without deleting %s", async (filename) => {
+    const fakes = popupDownloadFakes();
+    const download = fakes.item(60, "https://example.test/export?id=60");
 
-      const result = await captureBrowserDownload({
-        cdp: silentCdp(),
-        target: { tabId: 4 },
-        downloads: fakes.downloads,
-        navigationTargets: fakes.navigationTargets,
-        browserRelativeDir: "BrowserSkill/tr_60",
-        timeoutMs: 1_000,
-        trigger: async (markDispatched) => {
-          markDispatched();
-          fakes.popup(4, download.url);
-          await fakes.offer(download);
-          fakes.finishChanged(download, filename);
-          return { tab_id: 4, x: 10, y: 10 };
-        },
-      });
+    const result = await captureBrowserDownload({
+      cdp: silentCdp(),
+      target: { tabId: 4 },
+      downloads: fakes.downloads,
+      navigationTargets: fakes.navigationTargets,
+      browserRelativeDir: "BrowserSkill/tr_60",
+      timeoutMs: 1_000,
+      trigger: async (markDispatched) => {
+        markDispatched();
+        fakes.popup(4, download.url);
+        await fakes.offer(download);
+        fakes.finishChanged(download, filename);
+        return { tab_id: 4, x: 10, y: 10 };
+      },
+    });
 
-      expect(result).toMatchObject({
-        code: "cdp_failed",
-        data: { reason: "download_path_mismatch", effect_state: "committed" },
-      });
-      expect(fakes.downloads.removeFile).not.toHaveBeenCalled();
-      expect(fakes.downloads.cancel).not.toHaveBeenCalled();
-      expect(result).not.toMatchObject({ data: { cleanup_state: "failed" } });
-    },
-  );
+    expect(result).toMatchObject({
+      code: "cdp_failed",
+      data: { reason: "download_path_mismatch", effect_state: "committed" },
+    });
+    expect(fakes.downloads.removeFile).not.toHaveBeenCalled();
+    expect(fakes.downloads.cancel).not.toHaveBeenCalled();
+    expect(result).not.toMatchObject({ data: { cleanup_state: "failed" } });
+  });
 
   it.each([
     "navigation-first",

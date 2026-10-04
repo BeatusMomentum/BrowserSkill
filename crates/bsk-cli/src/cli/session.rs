@@ -407,7 +407,15 @@ impl RenderExtras for StartExtras<'_> {
                     out,
                     "no online browser matches the requested selector; connected browsers:"
                 )?;
-                write_browser_table(out, &browsers)
+                write_browser_table(out, &browsers)?;
+                // The table answers "what is connected", not "what did you
+                // mean": a mistyped selector and an offline browser look
+                // identical here, so name the question it cannot answer
+                // rather than let the caller switch instances by accident.
+                writeln!(
+                    out,
+                    "the list shows what is connected now; it cannot tell a mistyped selector from an offline browser, so check or reconnect the intended browser before starting on another instance"
+                )
             }
             _ => Ok(()),
         }
@@ -830,15 +838,24 @@ mod i3_tests {
         assert!(stderr.contains("alpha"));
         assert!(stderr.contains("beta"));
         assert!(stderr.contains("Personal"));
+        // The table must not read as "pick another instance": it cannot
+        // distinguish a mistyped selector from an offline browser.
+        assert!(
+            stderr.contains("cannot tell a mistyped selector from an offline browser"),
+            "extras must state what the list cannot tell: {stderr}"
+        );
         // Ordering contract unchanged: summary → extras → hint.
         let summary_idx = stderr.find("error:").expect("summary line missing");
         let table_idx = stderr
             .find("connected browsers:")
             .expect("candidate table missing");
+        let caveat_idx = stderr
+            .find("cannot tell a mistyped selector")
+            .expect("scope caveat missing");
         let hint_idx = stderr.find("hint:").expect("hint line missing");
         assert!(
-            summary_idx < table_idx && table_idx < hint_idx,
-            "stderr order must be summary → extras → hint, got:\n{stderr}"
+            summary_idx < table_idx && table_idx < caveat_idx && caveat_idx < hint_idx,
+            "stderr order must be summary → table → caveat → hint, got:\n{stderr}"
         );
         assert!(stderr.contains("details: requested browser is not connected"));
     }

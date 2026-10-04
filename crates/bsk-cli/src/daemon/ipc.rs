@@ -2091,6 +2091,13 @@ mod tests {
 #[cfg(test)]
 mod selector_miss_payload_tests {
     use super::*;
+    use crate::daemon::browsers::{
+        BrowserClient, BrowserId, BrowserRegistry, BrowserSink, Pending, next_browser_generation,
+    };
+    use crate::daemon::queue::ToolQueueRegistry;
+    use crate::daemon::sessions::{SessionRegistry, start_session_recoverable};
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
 
     fn status_entry(instance_id: &str, label: &str) -> BrowserStatusEntry {
         BrowserStatusEntry {
@@ -2138,5 +2145,101 @@ mod selector_miss_payload_tests {
             err.data.is_none(),
             "an empty registry must not invent a `browsers` payload"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Integration: the real start path, not the pieces
+    // -----------------------------------------------------------------
+
+    /// A registered browser, built in-process. `BrowserClient`'s fields
+    /// are public, so this registers candidates through the same
+    /// `BrowserRegistry` the daemon fills from the extension handshake —
+    /// no transport, no extension, no model.
+    fn connected_browser(instance_id: &str, label: &str) -> Arc<BrowserClient> {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Arc::new(BrowserClient {
+            id: BrowserId(instance_id.into()),
+            browser_name: "chrome".into(),
+            browser_version: "131".into(),
+            extension_version: "0.1.0-dev.0".into(),
+            extension_protocol_version: "1.0".into(),
+            label: label.into(),
+            sink: BrowserSink { tx },
+            pending: Mutex::new(Pending::default()),
+            generation: next_browser_generation(),
+            connected_at_ms: 0,
+            version_skew: false,
+            last_seen: Mutex::new(Instant::now()),
+            heartbeat_seen: AtomicBool::new(false),
+        })
+    }
+
+    /// Drives the function the daemon actually calls for
+    /// `session.start` against a populated registry. The two tests above
+    /// cover the error mapping and the CLI rendering in isolation; this
+    /// one pins both halves of the review ask on a single run:
+    ///
+    /// 1. the candidate list reaches the caller in the wire shape, and
+    /// 2. a failed selection creates **no** session.
+    ///
+    /// (2) is structural today — the selection `?` returns before any id
+    /// is reserved — and this test is what keeps it that way.
+    #[tokio::test]
+    async fn selector_miss_reaches_caller_and_creates_no_session() {
+        let registry = Arc::new(BrowserRegistry::new());
+        registry.insert(connected_browser("alpha", "Personal"));
+        registry.insert(connected_browser("beta", ""));
+        let sessions = Arc::new(SessionRegistry::new());
+        let queues = Arc::new(ToolQueueRegistry::new(registry.clone(), sessions.clone()));
+
+        assert!(sessions.is_empty(), "fixture must start with no sessions");
+
+        // A selector that matches nothing, with two browsers online:
+        // this must fail immediately and start nothing.
+        let error = start_session_recoverable(
+            &registry,
+            &sessions,
+            &queues,
+            Some("no-such-browser"),
+            AgentWindowOptions::default(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            None,
+            false,
+        )
+        .await
+        .expect_err("a selector that matches nothing must not start a session");
+
+        // (2) no session was reserved, so the caller can retry with a
+        // real instance id from the list below.
+        assert!(
+            sessions.is_empty(),
+            "a selector miss must not leave a session behind"
+        );
+
+        // (1) the candidates reach the caller through the daemon's own
+        // error mapping.
+        let rpc = map_start_error(error);
+        assert_eq!(rpc.code, ErrorCode::NotFound);
+        let data = rpc
+            .data
+            .expect("a miss with browsers online must carry candidates");
+        let browsers = data["browsers"].as_array().expect("browsers array");
+        let seen: Vec<(&str, &str)> = browsers
+            .iter()
+            .map(|b| {
+                (
+                    b["instance_id"].as_str().expect("instance_id"),
+                    b["label"].as_str().expect("label"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen.len(),
+            2,
+            "both connected browsers must be listed, got {seen:?}"
+        );
+        assert!(seen.contains(&("alpha", "Personal")), "got {seen:?}");
+        assert!(seen.contains(&("beta", "")), "got {seen:?}");
     }
 }

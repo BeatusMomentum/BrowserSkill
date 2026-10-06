@@ -1,3 +1,4 @@
+import { withUiTeardown } from "@/session-manager/ui-activity";
 // Tab-tool handlers. M6 wired `tool.tab_list`; M8 adds the rest of
 // the tab namespace: `tab_create`, `tab_close`, `tab_select`,
 // `tab_borrow`, `tab_return`. The dispatcher routes each method to a
@@ -7,6 +8,7 @@ import {
   OVERLAY_AGENT_OVERLAY_RESET,
   type OverlayAgentOverlayResetMessage,
 } from "@/lib/overlay-bridge";
+import { nextOverlayVersion } from "@/lib/overlay-version";
 import {
   isAgentControlledTab,
   type SessionContext,
@@ -181,6 +183,7 @@ export const chromeAgentOverlayResetApi: AgentOverlayResetApi = {
     const message: OverlayAgentOverlayResetMessage = {
       type: OVERLAY_AGENT_OVERLAY_RESET,
       sessionId,
+      ...nextOverlayVersion(),
     };
     await chrome.tabs.sendMessage(tabId, message);
   },
@@ -596,6 +599,7 @@ export async function handleTabClose(
     // Keep the tracking set accurate so session_stop won't try to close a
     // tab that's already gone (design §3.1).
     ctx.agentCreatedTabs.delete(params.tab_id);
+    ctx.observedTabs?.delete(params.tab_id);
   } catch (err) {
     return {
       code: "protocol_error",
@@ -697,6 +701,13 @@ async function validateBorrowTarget(
   if (typeof tab.id !== "number" || typeof tab.windowId !== "number") {
     return { code: "not_found", message: `tab ${tabId} not found` };
   }
+  const owner = manager.findControllingSession(tabId);
+  if (owner)
+    return rpcError(
+      "permission_denied",
+      "borrow_conflict",
+      `tab_borrow: tab ${tabId} is already controlled by session ${owner}`,
+    );
   if (tab.windowId === ctx.agentWindowId) {
     return {
       code: "invalid_params",
@@ -1117,6 +1128,14 @@ async function releaseReturnedTabState(
  * entry vs leaving it for retry.
  */
 export async function returnBorrowedTab(
+  ctx: SessionContext,
+  tabId: number,
+  deps: TabManagementDeps,
+): Promise<ReturnOutcome | RpcError> {
+  return withUiTeardown(ctx, tabId, () => returnBorrowedTabCore(ctx, tabId, deps));
+}
+
+async function returnBorrowedTabCore(
   ctx: SessionContext,
   tabId: number,
   deps: TabManagementDeps,

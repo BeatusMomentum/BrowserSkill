@@ -294,16 +294,12 @@ describe("armLazyTools", () => {
 
   it("scans a long uninvoked session once and then consumes live call/results", () => {
     const session = Session.create(SessionId("streaming"));
-    const readHistory = vi.spyOn(session, "events", "get");
+    const readHistory = vi.spyOn(session, "snapshotEvents");
     const { ctx, listeners } = fakeEventCtx({ list: () => [session] });
     const registerSuite = vi.fn(() => () => {});
     armLazyTools(ctx, registerSuite);
     for (let i = 0; i < 20_000; i++) {
-      const event = session.append("assistant/chunk", {
-        turn: 0,
-        step: 0,
-        chunk: { type: "text-delta", index: 0, text: "x" },
-      });
+      const event = session.append("step/end", { turn: 0, step: i });
       callListeners(listeners, "session/event", session, event);
     }
     callListeners(listeners, "session/created", session);
@@ -532,11 +528,43 @@ describe("hasSuccessfulSkillInvocation", () => {
         { type: "tool/result", data: { message: { isError: false } } },
       ]),
     ).toBe(false);
-    const message = structuredClone(skillResult().data.message);
-    message.content[0].toolCallId = "different" as never;
+    const message = {
+      source: { kind: "tool", callId: "skill-1" },
+      content: [{ type: "tool-result", toolCallId: "different", isError: false }],
+    };
     expect(
       hasSuccessfulSkillInvocation([skillCall(), { type: "tool/result", data: { message } }]),
     ).toBe(false);
+  });
+
+  it("restores DSH 0.2 results with matching envelope identities and a successful outcome", () => {
+    const message = {
+      role: "tool",
+      source: { kind: "tool", callId: "skill-1" },
+      toolCallId: "skill-1",
+      content: [{ type: "text", text: "skill instructions" }],
+      isError: false,
+    };
+    const result = { type: "tool/result", data: { message } };
+    expect(hasSuccessfulSkillInvocation([skillCall(), result])).toBe(true);
+    expect(hasSuccessfulSkillInvocation([result])).toBe(false);
+    expect(hasSuccessfulSkillInvocation([result, skillCall()])).toBe(false);
+
+    for (const invalid of [
+      { ...message, isError: true },
+      { ...message, isError: undefined },
+      { ...message, role: "assistant" },
+      { ...message, toolCallId: "different" },
+      { ...message, source: { kind: "tool", callId: "different" } },
+      { ...message, source: { kind: "tool" } },
+    ]) {
+      expect(
+        hasSuccessfulSkillInvocation([
+          skillCall(),
+          { type: "tool/result", data: { message: invalid } },
+        ]),
+      ).toBe(false);
+    }
   });
 
   it("pairs call and result by callId and honors gestures", () => {

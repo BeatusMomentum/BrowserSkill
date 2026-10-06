@@ -8,6 +8,7 @@ import { ControlOverlay } from "@/content/ControlOverlay";
 import { createCaptureSuppressController } from "@/content/capture-suppress";
 import { HelpRequestOverlay } from "@/content/HelpRequestOverlay";
 import { createHelpRequestData } from "@/content/help-request";
+import { createInputPassthroughController } from "@/content/input-passthrough";
 import overlayCss from "@/content/overlay.css?inline";
 import { OverlayController, shouldShowAgentControlOverlay } from "@/content/overlay-controller";
 import { RecordOverlay } from "@/content/RecordOverlay";
@@ -28,6 +29,11 @@ import {
   isHelpCancelMessage,
   isHelpRequestMessage,
 } from "@/lib/help-bridge";
+import {
+  type InputPassthroughAck,
+  type InputPassthroughMessage,
+  isInputPassthroughMessage,
+} from "@/lib/input-passthrough-bridge";
 import { getControlHintsHidden, STORAGE_KEYS } from "@/lib/instance-id";
 import {
   isOverlayAgentOverlayResetMessage,
@@ -37,6 +43,7 @@ import {
   type OverlayAgentOverlayResetMessage,
   type OverlayAgentStateMessage,
   type OverlayAutomationBypassMessage,
+  OverlayVersionGate,
 } from "@/lib/overlay-bridge";
 import { sendInterrupt } from "@/lib/overlay-interrupt-client";
 import {
@@ -75,6 +82,7 @@ export default defineContentScript({
     let overlayHost: HTMLElement | null = null;
     let overlayContainer: HTMLElement | null = null;
     let activeAgentState: OverlayAgentStateMessage | null = null;
+    const overlayVersions = new OverlayVersionGate();
     let hostLossReported = false;
     let remountInProgress = false;
 
@@ -87,6 +95,7 @@ export default defineContentScript({
     }
 
     const captureSuppress = createCaptureSuppressController(() => overlayHost);
+    const inputPassthrough = createInputPassthroughController(() => overlayHost);
 
     const ui = await createShadowRootUi(ctx, {
       name: "browser-skill-overlay",
@@ -101,6 +110,7 @@ export default defineContentScript({
         hostLossReported = false;
         // A host rebuilt mid-capture must stay hidden until `end` arrives.
         captureSuppress.onHostMounted(shadowHost);
+        inputPassthrough.onHostMounted(shadowHost);
         const app = document.createElement("div");
         app.className = "bsk-overlay-root";
         container.append(app);
@@ -166,6 +176,8 @@ export default defineContentScript({
     function renderReactOverlays(): void {
       const overlayState = overlays.snapshot();
       const controlOverlayVisible = shouldShowAgentControlOverlay(overlayState);
+      // Leaving control (including help/record UI) must not retain click leases.
+      if (!controlOverlayVisible) inputPassthrough.reset();
       const interactiveOverlayVisible =
         overlayState.borrowRequests.length > 0 ||
         overlayState.activeHelp !== null ||
@@ -217,13 +229,21 @@ export default defineContentScript({
       resetAgentOverlayState(sessionId);
     }
 
+    function receiveOverlayState(state: OverlayAgentStateMessage): void {
+      if (overlayVersions.admit(state)) applyOverlayState(state);
+    }
+
     function applyOverlayState(state: OverlayAgentStateMessage): void {
+      if (overlays.snapshot().activeSessionId !== state.sessionId) inputPassthrough.reset();
       activeAgentState = state;
       overlays.applyAgentControlMode(state.sessionId, state.mode);
       renderAll();
     }
 
     function resetAgentOverlayState(sessionId: string) {
+      const activeSessionId = overlays.snapshot().activeSessionId;
+      if (activeSessionId && activeSessionId !== sessionId) return;
+      inputPassthrough.reset();
       const previousHelp = overlays.resetAgentOverlays(sessionId);
       if (previousHelp) {
         void sendHelpFinish(previousHelp.id, "cancelled");
@@ -257,6 +277,7 @@ export default defineContentScript({
         | HelpRequestMessage
         | HelpCancelMessage
         | CaptureSuppressMessage
+        | InputPassthroughMessage
         | RecordStartMessage
         | RecordStopMessage
         | RecordCancelMessage
@@ -264,10 +285,15 @@ export default defineContentScript({
         | OverlayAgentStateMessage
         | OverlayAutomationBypassMessage,
       _sender: chrome.runtime.MessageSender,
-      sendResponse: (response: BorrowResponseMessage | HelpAckMessage | CaptureSuppressAck) => void,
+      sendResponse: (
+        response: BorrowResponseMessage | HelpAckMessage | CaptureSuppressAck | InputPassthroughAck,
+      ) => void,
     ) => {
       if (isCaptureSuppressMessage(message)) {
         return captureSuppress.handleMessage(message, sendResponse);
+      }
+      if (isInputPassthroughMessage(message)) {
+        return inputPassthrough.handleMessage(message, sendResponse);
       }
 
       if (isRecordStartMessage(message)) {
@@ -311,12 +337,12 @@ export default defineContentScript({
       }
 
       if (isOverlayAgentStateMessage(message)) {
-        applyOverlayState(message);
+        receiveOverlayState(message);
         return false;
       }
 
       if (isOverlayAgentOverlayResetMessage(message)) {
-        resetAgentOverlayState(message.sessionId);
+        if (overlayVersions.admit(message)) resetAgentOverlayState(message.sessionId);
         return false;
       }
 
@@ -461,7 +487,7 @@ export default defineContentScript({
           kind: OVERLAY_MSG_READY,
         })) as OverlayAgentStateMessage | undefined;
         if (state && isOverlayAgentStateMessage(state)) {
-          applyOverlayState(state);
+          receiveOverlayState(state);
         }
         void refreshAuxiliaryOverlayState();
       } catch (err) {
@@ -514,6 +540,7 @@ export default defineContentScript({
     hostObserver.observe(document.documentElement, { childList: true, subtree: false });
 
     ctx.onInvalidated(() => {
+      inputPassthrough.reset();
       hostObserver.disconnect();
       chrome.runtime.onMessage.removeListener(onMessage);
       chrome.storage.onChanged.removeListener(onStorageChange);

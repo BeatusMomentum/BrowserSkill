@@ -25,7 +25,9 @@ dsh --profile web
 ```
 
 Replace `web` with your profile name if you use a different profile. The plugin
-includes the `browser-skill` skill; no separate `bsk install-skill` step is needed.
+includes the complete `browser-skill` package; no separate `bsk install-skill` step is needed.
+Its compact entry point loads first; references ship with the plugin and are read only
+when needed. Relative paths resolve from the packaged skill directory, not your project.
 
 In a conversation, try:
 
@@ -34,6 +36,11 @@ In a conversation, try:
 ```
 
 By default, the browser tools become available when the skill is invoked.
+
+The plugin declares support for DSH `^0.1.5-rc.3 || ^0.2.0-rc.1`.
+DSH 0.2 checks these peer requirements before loading the plugin; versions outside
+this range are not declared compatible. The range preserves the existing 0.1.x
+baseline and admits 0.2.x without opting into future 0.3.x hosts.
 
 ## Updating
 

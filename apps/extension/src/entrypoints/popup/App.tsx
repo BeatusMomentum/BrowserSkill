@@ -6,12 +6,14 @@ import { AuditPanel } from "@/components/audit-panel";
 import { compareProtocol } from "@/lib/semver";
 import { PROTOCOL_VERSION } from "@/transport/handshake";
 import functionIconUrl from "../../../assets/function.svg";
+import { BrowserProfile } from "./browser-profile";
 import { ConnectionSettings } from "./connection-settings";
 import { ConnectionStatusIndicator } from "./connection-status-indicator";
+import { CurrentTasks } from "./current-tasks";
+import { DebugPanel } from "./debug-panel";
 import { POPUP_FEATURES, type PopupView } from "./features";
 import { InteractionSettings } from "./interaction-settings";
 import { LongScreenshot } from "./long-screenshot";
-import { ProfileInstructions } from "./profile-instructions";
 import { SettingInfo } from "./setting-info";
 import { Switch } from "./switch";
 import { type PopupStatusState, useConnectionState } from "./use-connection-state";
@@ -24,13 +26,6 @@ const STATE_LABEL_KEYS = {
   disabled: "popup.stateLabel.disabled",
 } as const satisfies Record<PopupStatusState, string>;
 
-const STATE_BADGE_KEYS = {
-  disconnected: "popup.stateBadge.disconnected",
-  connected: "popup.stateBadge.connected",
-  version_skew: "popup.stateBadge.version_skew",
-  disabled: "popup.stateBadge.disabled",
-} as const satisfies Record<PopupStatusState, string>;
-
 function getLogoSrc() {
   if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
     return chrome.runtime.getURL("icon/logo.png");
@@ -40,7 +35,7 @@ function getLogoSrc() {
 
 export function App() {
   const { t } = useTranslation("extension");
-  const { snapshot, statusState, setConnectionEnabled } = useConnectionState();
+  const { snapshot, statusState, setLabel, setConnectionEnabled } = useConnectionState();
   const [controlHintsHidden, setControlHintsHidden] = useControlHintsHidden();
   const [view, setView] = useState<PopupView>("main");
   const [copiedInstanceId, setCopiedInstanceId] = useState(false);
@@ -122,13 +117,15 @@ export function App() {
   const headerTitle =
     view === "features"
       ? t("popup.launcher.title")
-      : view === "record"
-        ? t("popup.record.sectionTitle")
-        : view === "long-screenshot"
-          ? t("longScreenshot.title")
-          : view === "audit"
-            ? t("audit.title")
-            : t("popup.brandName");
+      : view === "debug"
+        ? t("debug.title")
+        : view === "record"
+          ? t("popup.record.sectionTitle")
+          : view === "long-screenshot"
+            ? t("longScreenshot.title")
+            : view === "audit"
+              ? t("audit.title")
+              : t("popup.brandName");
 
   return (
     <main
@@ -198,13 +195,15 @@ export function App() {
                 </span>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Badge
-                  variant="outline"
-                  className="px-1.5 py-0 text-[10px] font-medium uppercase"
-                  data-slot="popup-state-badge"
-                >
-                  {t(STATE_BADGE_KEYS[statusState])}
-                </Badge>
+                {isSkewed && (
+                  <Badge
+                    variant="outline"
+                    className="px-1.5 py-0 text-[10px] font-medium uppercase"
+                    data-slot="popup-state-badge"
+                  >
+                    {t("popup.stateBadge.version_skew")}
+                  </Badge>
+                )}
                 <Switch
                   checked={snapshot.connectionEnabled}
                   onCheckedChange={setConnectionEnabled}
@@ -229,11 +228,20 @@ export function App() {
                 )}
               </p>
             )}
+            <BrowserProfile
+              label={snapshot.label}
+              instanceId={snapshot.instanceId}
+              connected={
+                snapshot.connectionEnabled &&
+                (snapshot.state === "connected" || snapshot.state === "version_skew")
+              }
+              sessionCount={snapshot.sessionCount}
+              onSave={setLabel}
+            />
             <ConnectionSettings
               connectionEnabled={snapshot.connectionEnabled}
               disconnected={isDisconnected && !snapshot.lastError}
             />
-            <ProfileInstructions instanceId={snapshot.instanceId} connected={connectionLive} />
           </section>
 
           <section
@@ -262,6 +270,8 @@ export function App() {
           </section>
 
           <InteractionSettings />
+
+          <CurrentTasks enabled={connectionLive} />
 
           {snapshot.lastError && (
             <div
@@ -343,6 +353,7 @@ export function App() {
 
       {view === "long-screenshot" && <LongScreenshot />}
       {view === "audit" && <AuditPanel />}
+      {view === "debug" && <DebugPanel connected={connectionLive} />}
 
       {view === "record" && (
         <section className="space-y-2.5" data-slot="popup-record-body">
